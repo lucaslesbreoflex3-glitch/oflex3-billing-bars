@@ -176,27 +176,91 @@ col2.metric("Facturation du mois", f"{latest_total:,.0f} €")
 col3.metric("Écart vs objectif", f"{latest_total - float(target):,.0f} €")
 
 if show_table:
-    st.subheader("Factures enregistrées (modifiable)")
+    st.subheader("Factures enregistrées (modifier / supprimer)")
 
-    df_sorted = df.sort_values(
-        ["month", "created_at"],
-        ascending=[False, False]
-    ).reset_index(drop=True)
+    # On garde une copie triée pour l'affichage
+    df_view = df.sort_values(["month", "created_at"], ascending=[False, False]).reset_index(drop=True)
 
-    for idx, row in df_sorted.iterrows():
-        col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 2, 1])
+    # Stocke l'index de la ligne en cours d'édition (dans la session)
+    if "edit_row" not in st.session_state:
+        st.session_state.edit_row = None
 
-        col1.write(row["client"])
-        col2.write(f'{row["amount"]:,.0f} €')
-        col3.write(row["month"])
-        col4.write(row["created_at"])
-        delete = col5.button("❌", key=f"delete_{idx}")
+    # En-têtes
+    h1, h2, h3, h4, h5, h6 = st.columns([3, 2, 2, 3, 1, 1])
+    h1.markdown("**Client**")
+    h2.markdown("**Montant**")
+    h3.markdown("**Mois**")
+    h4.markdown("**Créé le**")
+    h5.markdown("**Edit**")
+    h6.markdown("**Del**")
 
-        if delete:
-            df = df.drop(df_sorted.index[idx]).reset_index(drop=True)
-            save_data(df)
-            st.success("Ligne supprimée")
-            st.experimental_rerun()
+    st.divider()
+
+    for i, row in df_view.iterrows():
+        is_editing = (st.session_state.edit_row == i)
+
+        c1, c2, c3, c4, c5, c6 = st.columns([3, 2, 2, 3, 1, 1])
+
+        if not is_editing:
+            c1.write(row["client"])
+            c2.write(f'{row["amount"]:,.0f} €')
+            c3.write(row["month"])
+            c4.write(row["created_at"])
+
+            if c5.button("✏️", key=f"edit_{i}"):
+                st.session_state.edit_row = i
+                st.experimental_rerun()
+
+            if c6.button("❌", key=f"delete_{i}"):
+                # IMPORTANT : df_view est reset_index => on supprime via une clé stable
+                # Ici, on identifie la ligne à supprimer via created_at + client + amount + month
+                mask = (
+                    (df["created_at"] == row["created_at"]) &
+                    (df["client"] == row["client"]) &
+                    (df["amount"] == row["amount"]) &
+                    (df["month"] == row["month"])
+                )
+                df = df.loc[~mask].copy()
+                save_data(df)
+                st.success("Ligne supprimée")
+                st.session_state.edit_row = None
+                st.experimental_rerun()
+
+        else:
+            # Mode édition
+            new_client = c1.text_input("Client", value=str(row["client"]), key=f"client_{i}")
+            new_amount = c2.number_input("Montant (€)", min_value=0.0, value=float(row["amount"]), step=1000.0, key=f"amount_{i}")
+            new_month = c3.text_input("Mois (YYYY-MM)", value=str(row["month"]), key=f"month_{i}")
+            c4.write(row["created_at"])
+
+            if c5.button("💾", key=f"save_{i}"):
+                # Met à jour la ligne dans df (original) via masque unique
+                mask = (
+                    (df["created_at"] == row["created_at"]) &
+                    (df["client"] == row["client"]) &
+                    (df["amount"] == row["amount"]) &
+                    (df["month"] == row["month"])
+                )
+
+                df.loc[mask, "client"] = new_client.strip()
+                df.loc[mask, "amount"] = float(new_amount)
+                df.loc[mask, "month"] = new_month.strip()
+
+                save_data(df)
+                st.success("Modifications enregistrées ✅")
+                st.session_state.edit_row = None
+                st.experimental_rerun()
+
+            if c6.button("↩️", key=f"cancel_{i}"):
+                st.session_state.edit_row = None
+                st.experimental_rerun()
+
+    st.download_button(
+        "Télécharger le CSV",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name="billing_simple_export.csv",
+        mime="text/csv",
+    )
 
     st.download_button(
         "Télécharger le CSV",
