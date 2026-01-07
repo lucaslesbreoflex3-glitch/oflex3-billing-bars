@@ -176,8 +176,27 @@ col2.metric("Facturation du mois", f"{latest_total:,.0f} €")
 col3.metric("Écart vs objectif", f"{latest_total - float(target):,.0f} €")
 
 if show_table:
-    st.subheader("Factures enregistrées")
-    st.dataframe(df.sort_values(["month", "created_at"], ascending=[False, False]), use_container_width=True)
+    st.subheader("Factures enregistrées (modifiable)")
+
+    df_sorted = df.sort_values(
+        ["month", "created_at"],
+        ascending=[False, False]
+    ).reset_index(drop=True)
+
+    for idx, row in df_sorted.iterrows():
+        col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 2, 1])
+
+        col1.write(row["client"])
+        col2.write(f'{row["amount"]:,.0f} €')
+        col3.write(row["month"])
+        col4.write(row["created_at"])
+        delete = col5.button("❌", key=f"delete_{idx}")
+
+        if delete:
+            df = df.drop(df_sorted.index[idx]).reset_index(drop=True)
+            save_data(df)
+            st.success("Ligne supprimée")
+            st.experimental_rerun()
 
     st.download_button(
         "Télécharger le CSV",
