@@ -81,6 +81,7 @@ def month_default() -> str:
 # -------------------------
 st.set_page_config(page_title="Billing Bars", layout="wide")
 st.title("📊 Facturation mensuelle – Barres (objectif 200k€/mois)")
+st.session_state["mobile_safe"] = st.toggle("📱 Mobile safe mode (recommended on phone)", value=st.session_state.get("mobile_safe", False))
 
 df = load_data()
 
@@ -163,8 +164,7 @@ target_line = alt.Chart(pd.DataFrame({"y": [target]})).mark_rule(strokeDash=[6, 
     y="y:Q"
 )
 
-chart = (bars + labels + target_line).properties(height=420).interactive()
-
+chart = (bars + labels + target_line).properties(height=360)
 st.altair_chart(chart, use_container_width=True)
 
 # Quick KPIs
