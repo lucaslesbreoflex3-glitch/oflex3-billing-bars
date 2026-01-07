@@ -3,15 +3,14 @@ import uuid
 from datetime import date
 import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
-
+import altair as alt
 
 DATA_PATH = "billing_simple.csv"
 DEFAULT_TARGET = 200_000  # 200k€/mois
 
 
 # -------------------------
-# Data layer
+# Helpers
 # -------------------------
 def month_default() -> str:
     today = date.today()
@@ -24,11 +23,11 @@ def load_data() -> pd.DataFrame:
 
     df = pd.read_csv(DATA_PATH)
 
-    # Backward compatibility: older CSV may not have "id"
+    # Backward compatibility if old CSV didn't have id
     if "id" not in df.columns:
         df["id"] = [str(uuid.uuid4()) for _ in range(len(df))]
 
-    # Ensure required cols exist
+    # Ensure columns exist
     for col in ["client", "amount", "month", "created_at"]:
         if col not in df.columns:
             df[col] = "" if col != "amount" else 0.0
@@ -37,18 +36,13 @@ def load_data() -> pd.DataFrame:
     df["month"] = df["month"].astype(str)
     df["client"] = df["client"].astype(str)
 
-    # Reorder columns
-    df = df[["id", "client", "amount", "month", "created_at"]]
-    return df
+    return df[["id", "client", "amount", "month", "created_at"]]
 
 
 def save_data(df: pd.DataFrame) -> None:
     df.to_csv(DATA_PATH, index=False)
 
 
-# -------------------------
-# Color logic (red -> yellow -> green)
-# -------------------------
 def clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, x))
 
@@ -57,42 +51,47 @@ def lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
 
 
-def color_for_value(value: float, target: float, pivot: float = 0.60):
+def rgb_to_hex(r: float, g: float, b: float) -> str:
+    return "#{:02x}{:02x}{:02x}".format(int(r), int(g), int(b))
+
+
+def color_for_value(value: float, target: float, pivot: float = 0.60) -> str:
     """
-    Returns an RGB tuple (0..1) for matplotlib.
-    0..pivot*target -> red->yellow
-    pivot..target -> yellow->green
-    >= target -> green
+    Gradient:
+      0 .. pivot*target  : red -> yellow
+      pivot .. target    : yellow -> green
+      >= target          : green
+    pivot=0.60 makes ~120k look yellow-ish for a 200k target.
+    Returns HEX color string.
     """
     if target <= 0:
-        return (0.1, 0.6, 0.4)
+        return "#198754"
 
     ratio = clamp(value / target, 0.0, 1.0)
 
-    # Anchor colors (nice, readable)
-    red = (220/255, 53/255, 69/255)
-    yellow = (255/255, 193/255, 7/255)
-    green = (25/255, 135/255, 84/255)
+    red = (220, 53, 69)
+    yellow = (255, 193, 7)
+    green = (25, 135, 84)
 
     if ratio <= pivot:
         t = ratio / pivot if pivot > 0 else 1
         r = lerp(red[0], yellow[0], t)
         g = lerp(red[1], yellow[1], t)
         b = lerp(red[2], yellow[2], t)
-        return (r, g, b)
+        return rgb_to_hex(r, g, b)
 
     t = (ratio - pivot) / (1 - pivot) if (1 - pivot) > 0 else 1
     r = lerp(yellow[0], green[0], t)
     g = lerp(yellow[1], green[1], t)
     b = lerp(yellow[2], green[2], t)
-    return (r, g, b)
+    return rgb_to_hex(r, g, b)
 
 
 # -------------------------
 # UI
 # -------------------------
-st.set_page_config(page_title="Billing Bars", layout="centered")
-st.title("📊 Facturation mensuelle — Objectif 200k€/mois")
+st.set_page_config(page_title="Billing Bars", layout="wide")
+st.title("📊 Facturation mensuelle — objectif 200k€/mois")
 
 df = load_data()
 
@@ -100,47 +99,44 @@ df = load_data()
 if "edit_id" not in st.session_state:
     st.session_state.edit_id = None
 
-# Controls (mobile-friendly: not in sidebar)
-with st.expander("➕ Ajouter une facture", expanded=True):
-    c1, c2 = st.columns([2, 1])
-    with c1:
+# Sidebar: input + settings
+with st.sidebar:
+    st.header("➕ Ajouter une facture")
+    with st.form("add_invoice", clear_on_submit=True):
         client = st.text_input("Nom du client *", placeholder="ex: PETITEFRITURE")
-    with c2:
-        amount = st.number_input("Montant (€) *", min_value=0.0, value=0.0, step=1000.0)
+        amount = st.number_input("Montant facture (€) *", min_value=0.0, value=0.0, step=1000.0)
+        month = st.text_input("Mois (YYYY-MM) *", value=month_default())
+        submitted = st.form_submit_button("Ajouter")
 
-    month = st.text_input("Mois (YYYY-MM) *", value=month_default())
+        if submitted:
+            if not client.strip():
+                st.error("Le nom du client est obligatoire.")
+            elif not month.strip():
+                st.error("Le mois est obligatoire.")
+            elif amount <= 0:
+                st.error("Le montant doit être > 0.")
+            else:
+                new_row = {
+                    "id": str(uuid.uuid4()),
+                    "client": client.strip(),
+                    "amount": float(amount),
+                    "month": month.strip(),
+                    "created_at": pd.Timestamp.utcnow().isoformat(timespec="seconds"),
+                }
+                df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+                save_data(df)
+                st.success("Facture ajoutée ✅")
+                st.rerun()
 
-    add = st.button("Ajouter", type="primary")
-    if add:
-        if not client.strip():
-            st.error("Le nom du client est obligatoire.")
-        elif not month.strip():
-            st.error("Le mois est obligatoire.")
-        elif amount <= 0:
-            st.error("Le montant doit être > 0.")
-        else:
-            new_row = {
-                "id": str(uuid.uuid4()),
-                "client": client.strip(),
-                "amount": float(amount),
-                "month": month.strip(),
-                "created_at": pd.Timestamp.utcnow().isoformat(timespec="seconds"),
-            }
-            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-            save_data(df)
-            st.success("Facture ajoutée ✅")
-            st.rerun()
-
-st.divider()
-
-# Settings
-with st.expander("⚙️ Paramètres", expanded=False):
+    st.divider()
+    st.header("⚙️ Paramètres")
     target = st.number_input("Objectif mensuel (€)", min_value=1.0, value=float(DEFAULT_TARGET), step=10_000.0)
     show_entries = st.checkbox("Afficher / modifier les factures", value=True)
-    show_raw_table = st.checkbox("Afficher tableau brut (debug)", value=False)
+    show_raw_table = st.checkbox("Afficher tableau brut", value=False)
 
-with st.expander("🧨 Danger zone", expanded=False):
-    if st.button("Réinitialiser (supprime toutes les données)", type="secondary"):
+    st.divider()
+    st.header("🧨 Danger zone")
+    if st.button("Réinitialiser (supprime toutes les données)", type="primary"):
         if os.path.exists(DATA_PATH):
             os.remove(DATA_PATH)
         df = load_data()
@@ -148,50 +144,65 @@ with st.expander("🧨 Danger zone", expanded=False):
         st.warning("Données supprimées.")
         st.rerun()
 
-# If no data
+# Empty state
 if df.empty:
-    st.info("Ajoute une facture pour voir les barres mensuelles.")
+    st.info("Ajoute une première facture dans la barre latérale.")
     st.stop()
 
 # Aggregate per month
 monthly = df.groupby("month", as_index=False)["amount"].sum().rename(columns={"amount": "total"})
 monthly = monthly.sort_values("month")
 
+monthly["pct"] = (monthly["total"] / float(target)) * 100
+monthly["label"] = monthly.apply(lambda r: f"{r['total']:,.0f} €  ({r['pct']:.0f}%)", axis=1)
+monthly["color"] = monthly["total"].apply(lambda v: color_for_value(float(v), float(target)))
+
 # KPIs
+col1, col2, col3, col4 = st.columns(4)
+invoiced = float(monthly["total"].sum())
 latest_month = monthly.iloc[-1]["month"]
 latest_total = float(monthly.iloc[-1]["total"])
-col1, col2, col3 = st.columns(3)
-col1.metric("Dernier mois", latest_month)
-col2.metric("Facturation du mois", f"{latest_total:,.0f} €")
-col3.metric("Écart vs objectif", f"{latest_total - float(target):,.0f} €")
+open_gap = latest_total - float(target)
+
+col1.metric("Total (tous mois)", f"{invoiced:,.0f} €")
+col2.metric("Dernier mois", latest_month)
+col3.metric("Facturation du mois", f"{latest_total:,.0f} €")
+col4.metric("Écart vs objectif (mois)", f"{open_gap:,.0f} €")
 
 st.subheader("Barres mensuelles (couleur progressive vers l’objectif)")
 
-# Matplotlib chart (very mobile-safe)
-fig, ax = plt.subplots(figsize=(7, 4.2), dpi=140)
+# Altair chart (pretty)
+base = alt.Chart(monthly).encode(
+    x=alt.X("month:N", sort=None, title="Mois (YYYY-MM)")
+)
 
-colors = [color_for_value(v, float(target)) for v in monthly["total"].tolist()]
-ax.bar(monthly["month"].tolist(), monthly["total"].tolist(), color=colors)
+bars = base.mark_bar().encode(
+    y=alt.Y("total:Q", title="Facturation (€)"),
+    color=alt.Color("color:N", scale=None, legend=None),
+    tooltip=[
+        alt.Tooltip("month:N", title="Mois"),
+        alt.Tooltip("total:Q", title="Total (€)", format=",.0f"),
+        alt.Tooltip("pct:Q", title="% objectif", format=".0f"),
+    ],
+)
 
-ax.axhline(float(target), linestyle="--", linewidth=1)
-ax.set_ylabel("Facturation (€)")
-ax.set_xlabel("Mois (YYYY-MM)")
-ax.tick_params(axis="x", rotation=35)
+labels = base.mark_text(dy=-8).encode(
+    y=alt.Y("total:Q"),
+    text=alt.Text("label:N"),
+)
 
-# Add value labels (lightweight)
-for x, v in zip(monthly["month"].tolist(), monthly["total"].tolist()):
-    ax.text(x, v, f"{v:,.0f}€", ha="center", va="bottom", fontsize=8, rotation=0)
+target_line = alt.Chart(pd.DataFrame({"y": [float(target)]})).mark_rule(strokeDash=[6, 6]).encode(
+    y="y:Q"
+)
 
-fig.tight_layout()
-st.pyplot(fig, clear_figure=True)
+chart = (bars + labels + target_line).properties(height=420)
+st.altair_chart(chart, use_container_width=True)
 
-# Overdue / heat explanation (simple)
 st.caption("Couleur: rouge (faible) → jaune (moyen) → vert (objectif atteint à 200k€).")
 
-st.divider()
-
-# Entries management (mobile-friendly cards)
+# Manage entries (edit / delete) - mobile friendly cards
 if show_entries:
+    st.divider()
     st.subheader("Factures enregistrées (modifier / supprimer)")
 
     df_view = df.sort_values(["month", "created_at"], ascending=[False, False]).reset_index(drop=True)
@@ -246,12 +257,11 @@ if show_entries:
                     st.session_state.edit_id = None
                     st.rerun()
 
-# Raw table (optional)
 if show_raw_table:
-    st.subheader("Tableau brut (debug)")
+    st.divider()
+    st.subheader("Tableau brut")
     st.dataframe(df, use_container_width=True)
 
-# Export
 st.download_button(
     "⬇️ Télécharger le CSV",
     data=df.to_csv(index=False).encode("utf-8"),
