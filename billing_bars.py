@@ -17,30 +17,43 @@ def month_default() -> str:
     return f"{today.year:04d}-{today.month:02d}"
 
 
+def save_data(df: pd.DataFrame) -> None:
+    # Force stable column order
+    df = df[["id", "client", "amount", "month", "created_at"]].copy()
+    df.to_csv(DATA_PATH, index=False)
+
+
 def load_data() -> pd.DataFrame:
+    """
+    Loads CSV and guarantees every row has a stable string 'id' persisted to disk.
+    This is CRITICAL for reliable edit/delete.
+    """
     if not os.path.exists(DATA_PATH):
         return pd.DataFrame(columns=["id", "client", "amount", "month", "created_at"])
 
     df = pd.read_csv(DATA_PATH)
 
-    # Backward compatibility if old CSV didn't have id
-    if "id" not in df.columns:
-        df["id"] = [str(uuid.uuid4()) for _ in range(len(df))]
-
     # Ensure columns exist
-    for col in ["client", "amount", "month", "created_at"]:
+    for col in ["id", "client", "amount", "month", "created_at"]:
         if col not in df.columns:
             df[col] = "" if col != "amount" else 0.0
 
+    # Clean types
     df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
     df["month"] = df["month"].astype(str)
     df["client"] = df["client"].astype(str)
+    df["created_at"] = df["created_at"].astype(str)
+
+    # IMPORTANT: stable string IDs
+    df["id"] = df["id"].astype(str)
+
+    # Detect missing/invalid ids and persist them
+    missing = df["id"].isin(["", "nan", "None"]) | df["id"].isna()
+    if missing.any():
+        df.loc[missing, "id"] = [str(uuid.uuid4()) for _ in range(int(missing.sum()))]
+        save_data(df)
 
     return df[["id", "client", "amount", "month", "created_at"]]
-
-
-def save_data(df: pd.DataFrame) -> None:
-    df.to_csv(DATA_PATH, index=False)
 
 
 def clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -62,7 +75,7 @@ def color_for_value(value: float, target: float, pivot: float = 0.60) -> str:
       pivot .. target    : yellow -> green
       >= target          : green
     pivot=0.60 makes ~120k look yellow-ish for a 200k target.
-    Returns HEX color string.
+    Returns HEX string for Altair (scale=None).
     """
     if target <= 0:
         return "#198754"
@@ -150,8 +163,12 @@ if df.empty:
     st.stop()
 
 # Aggregate per month
-monthly = df.groupby("month", as_index=False)["amount"].sum().rename(columns={"amount": "total"})
-monthly = monthly.sort_values("month")
+monthly = (
+    df.groupby("month", as_index=False)["amount"]
+    .sum()
+    .rename(columns={"amount": "total"})
+    .sort_values("month")
+)
 
 monthly["pct"] = (monthly["total"] / float(target)) * 100
 monthly["label"] = monthly.apply(lambda r: f"{r['total']:,.0f} €  ({r['pct']:.0f}%)", axis=1)
@@ -159,19 +176,19 @@ monthly["color"] = monthly["total"].apply(lambda v: color_for_value(float(v), fl
 
 # KPIs
 col1, col2, col3, col4 = st.columns(4)
-invoiced = float(monthly["total"].sum())
+total_all_months = float(monthly["total"].sum())
 latest_month = monthly.iloc[-1]["month"]
 latest_total = float(monthly.iloc[-1]["total"])
-open_gap = latest_total - float(target)
+gap = latest_total - float(target)
 
-col1.metric("Total (tous mois)", f"{invoiced:,.0f} €")
+col1.metric("Total (tous mois)", f"{total_all_months:,.0f} €")
 col2.metric("Dernier mois", latest_month)
 col3.metric("Facturation du mois", f"{latest_total:,.0f} €")
-col4.metric("Écart vs objectif (mois)", f"{open_gap:,.0f} €")
+col4.metric("Écart vs objectif (mois)", f"{gap:,.0f} €")
 
 st.subheader("Barres mensuelles (couleur progressive vers l’objectif)")
 
-# Altair chart (pretty)
+# Altair chart
 base = alt.Chart(monthly).encode(
     x=alt.X("month:N", sort=None, title="Mois (YYYY-MM)")
 )
@@ -200,7 +217,7 @@ st.altair_chart(chart, use_container_width=True)
 
 st.caption("Couleur: rouge (faible) → jaune (moyen) → vert (objectif atteint à 200k€).")
 
-# Manage entries (edit / delete) - mobile friendly cards
+# Manage entries (edit / delete) - cards
 if show_entries:
     st.divider()
     st.subheader("Factures enregistrées (modifier / supprimer)")
@@ -208,7 +225,7 @@ if show_entries:
     df_view = df.sort_values(["month", "created_at"], ascending=[False, False]).reset_index(drop=True)
 
     for _, row in df_view.iterrows():
-        rid = row["id"]
+        rid = str(row["id"])  # ensure string
         is_editing = (st.session_state.edit_id == rid)
 
         with st.container(border=True):
@@ -224,6 +241,7 @@ if show_entries:
                     st.rerun()
 
                 if b2.button("❌ Supprimer", key=f"del_{rid}"):
+                    df["id"] = df["id"].astype(str)
                     df = df[df["id"] != rid].copy()
                     save_data(df)
                     st.session_state.edit_id = None
@@ -245,6 +263,7 @@ if show_entries:
 
                 b1, b2 = st.columns(2)
                 if b1.button("💾 Enregistrer", type="primary", key=f"save_{rid}"):
+                    df["id"] = df["id"].astype(str)
                     df.loc[df["id"] == rid, "client"] = new_client.strip()
                     df.loc[df["id"] == rid, "amount"] = float(new_amount)
                     df.loc[df["id"] == rid, "month"] = new_month.strip()
