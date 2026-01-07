@@ -178,89 +178,70 @@ col3.metric("Écart vs objectif", f"{latest_total - float(target):,.0f} €")
 if show_table:
     st.subheader("Factures enregistrées (modifier / supprimer)")
 
-    # On garde une copie triée pour l'affichage
     df_view = df.sort_values(["month", "created_at"], ascending=[False, False]).reset_index(drop=True)
 
-    # Stocke l'index de la ligne en cours d'édition (dans la session)
+    mobile = st.session_state.get("force_mobile", False)
+
     if "edit_row" not in st.session_state:
         st.session_state.edit_row = None
 
-    # En-têtes
-    h1, h2, h3, h4, h5, h6 = st.columns([3, 2, 2, 3, 1, 1])
-    h1.markdown("**Client**")
-    h2.markdown("**Montant**")
-    h3.markdown("**Mois**")
-    h4.markdown("**Créé le**")
-    h5.markdown("**Edit**")
-    h6.markdown("**Del**")
+    if mobile:
+        # ----- MOBILE: une carte par ligne -----
+        for i, row in df_view.iterrows():
+            with st.container(border=True):
+                st.write(f"**Client :** {row['client']}")
+                st.write(f"**Montant :** {row['amount']:,.0f} €")
+                st.write(f"**Mois :** {row['month']}")
+                st.caption(f"Créé le: {row['created_at']}")
 
-    st.divider()
+                is_editing = (st.session_state.edit_row == i)
 
-    for i, row in df_view.iterrows():
-        is_editing = (st.session_state.edit_row == i)
+                if not is_editing:
+                    c1, c2 = st.columns(2)
+                    if c1.button("✏️ Modifier", key=f"m_edit_{i}"):
+                        st.session_state.edit_row = i
+                        st.experimental_rerun()
 
-        c1, c2, c3, c4, c5, c6 = st.columns([3, 2, 2, 3, 1, 1])
+                    if c2.button("❌ Supprimer", key=f"m_delete_{i}"):
+                        mask = (
+                            (df["created_at"] == row["created_at"]) &
+                            (df["client"] == row["client"]) &
+                            (df["amount"] == row["amount"]) &
+                            (df["month"] == row["month"])
+                        )
+                        df = df.loc[~mask].copy()
+                        save_data(df)
+                        st.session_state.edit_row = None
+                        st.success("Ligne supprimée")
+                        st.experimental_rerun()
+                else:
+                    new_client = st.text_input("Client", value=str(row["client"]), key=f"m_client_{i}")
+                    new_amount = st.number_input("Montant (€)", min_value=0.0, value=float(row["amount"]), step=1000.0, key=f"m_amount_{i}")
+                    new_month = st.text_input("Mois (YYYY-MM)", value=str(row["month"]), key=f"m_month_{i}")
 
-        if not is_editing:
-            c1.write(row["client"])
-            c2.write(f'{row["amount"]:,.0f} €')
-            c3.write(row["month"])
-            c4.write(row["created_at"])
+                    c1, c2 = st.columns(2)
+                    if c1.button("💾 Enregistrer", key=f"m_save_{i}"):
+                        mask = (
+                            (df["created_at"] == row["created_at"]) &
+                            (df["client"] == row["client"]) &
+                            (df["amount"] == row["amount"]) &
+                            (df["month"] == row["month"])
+                        )
+                        df.loc[mask, "client"] = new_client.strip()
+                        df.loc[mask, "amount"] = float(new_amount)
+                        df.loc[mask, "month"] = new_month.strip()
+                        save_data(df)
+                        st.session_state.edit_row = None
+                        st.success("Modifications enregistrées ✅")
+                        st.experimental_rerun()
 
-            if c5.button("✏️", key=f"edit_{i}"):
-                st.session_state.edit_row = i
-                st.experimental_rerun()
+                    if c2.button("↩️ Annuler", key=f"m_cancel_{i}"):
+                        st.session_state.edit_row = None
+                        st.experimental_rerun()
 
-            if c6.button("❌", key=f"delete_{i}"):
-                # IMPORTANT : df_view est reset_index => on supprime via une clé stable
-                # Ici, on identifie la ligne à supprimer via created_at + client + amount + month
-                mask = (
-                    (df["created_at"] == row["created_at"]) &
-                    (df["client"] == row["client"]) &
-                    (df["amount"] == row["amount"]) &
-                    (df["month"] == row["month"])
-                )
-                df = df.loc[~mask].copy()
-                save_data(df)
-                st.success("Ligne supprimée")
-                st.session_state.edit_row = None
-                st.experimental_rerun()
-
-        else:
-            # Mode édition
-            new_client = c1.text_input("Client", value=str(row["client"]), key=f"client_{i}")
-            new_amount = c2.number_input("Montant (€)", min_value=0.0, value=float(row["amount"]), step=1000.0, key=f"amount_{i}")
-            new_month = c3.text_input("Mois (YYYY-MM)", value=str(row["month"]), key=f"month_{i}")
-            c4.write(row["created_at"])
-
-            if c5.button("💾", key=f"save_{i}"):
-                # Met à jour la ligne dans df (original) via masque unique
-                mask = (
-                    (df["created_at"] == row["created_at"]) &
-                    (df["client"] == row["client"]) &
-                    (df["amount"] == row["amount"]) &
-                    (df["month"] == row["month"])
-                )
-
-                df.loc[mask, "client"] = new_client.strip()
-                df.loc[mask, "amount"] = float(new_amount)
-                df.loc[mask, "month"] = new_month.strip()
-
-                save_data(df)
-                st.success("Modifications enregistrées ✅")
-                st.session_state.edit_row = None
-                st.experimental_rerun()
-
-            if c6.button("↩️", key=f"cancel_{i}"):
-                st.session_state.edit_row = None
-                st.experimental_rerun()
-
-    st.download_button(
-        "Télécharger le CSV",
-        data=df.to_csv(index=False).encode("utf-8"),
-        file_name="billing_simple_export.csv",
-        mime="text/csv",
-    )
+    else:
+        # ----- DESKTOP: ton affichage en colonnes (si tu veux le garder) -----
+        st.dataframe(df_view, use_container_width=True)
 
     st.download_button(
         "Télécharger le CSV",
